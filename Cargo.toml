@@ -1,0 +1,31 @@
+[package]
+name = "lease"
+version = "0.1.0"
+authors = ["Tyler Hawkes <tyler.hawkes@gmail.com>"]
+edition = "2018"
+publish = ["crates-io"]
+description = "Object pool that leases values and automatically returns them with async support"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tylerhawkes/lease"
+documentation = "https://docs.rs/lease"
+readme = "README.md"
+keywords = ["pool", "object", "async", "cache"]
+categories = ["data-structures", "asynchronous", "caching", "concurrency", "memory-management"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures-core = { version = "0.3", optional = true }
+linked-hash-map = { version = "0.5", optional = true }
+parking_lot = { version = "0.11", default-features = false }
+
+[features]
+async = ["linked-hash-map"]
+stream = ["futures-core", "async"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+[package.metadata.docs.rs]
+all-features = true
