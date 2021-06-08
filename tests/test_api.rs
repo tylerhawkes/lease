@@ -48,7 +48,7 @@ async fn test_async_pool() {
   }
 }
 
-#[cfg(feature = "async")]
+#[cfg(feature = "stream")]
 #[tokio::test]
 async fn test_async_pool_concurrent() {
   use futures::StreamExt;
@@ -79,14 +79,8 @@ async fn test_async_pool_concurrent() {
     tokio::pin!(sleep);
     tokio::select! {
       biased;
-      l = waiting1.next(), if !waiting1.is_empty() => match l {
-        Some(l) => leases.push_back(l),
-        None => {},
-      },
-      l = waiting2.next(), if !waiting2.is_empty() => match l {
-        Some(l) => leases.push_back(l),
-        None => {},
-      },
+      l = waiting1.next(), if !waiting1.is_empty() => if let Some(l) = l {leases.push_back(l)},
+      l = waiting2.next(), if !waiting2.is_empty() => if let Some(l) = l {leases.push_back(l)},
       s = &mut next, if waiting1.is_empty() && waiting2.is_empty() => {
         leases.push_back(s.unwrap());
         next = stream.next();

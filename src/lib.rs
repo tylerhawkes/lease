@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 #[cfg(feature = "async")]
 pub use async_lease::AsyncLease;
-#[cfg(feature = "stream")]
+#[cfg(feature = "async")]
 pub use pool_stream::PoolStream;
 
 /// A pool of objects of type `T` that can be leased out.
@@ -33,23 +33,21 @@ pub use pool_stream::PoolStream;
 ///
 /// There are some non-asynchronous locks used internally, but all of their critical code paths
 /// are so short that the author doesn't consider them to be blocking.
-#[must_use]
-#[derive(Clone)]
 pub struct Pool<T> {
-  buffer: Arc<RwLock<Vec<Arc<Mutex<T>>>>>,
+  inner: Arc<PoolInner<T>>,
+}
+
+#[must_use]
+struct PoolInner<T> {
+  buffer: RwLock<Vec<Arc<Mutex<T>>>>,
   #[cfg(feature = "async")]
-  waiting_futures: Arc<Mutex<linked_hash_map::LinkedHashMap<usize, core::task::Waker>>>,
+  waiting_futures: Mutex<linked_hash_map::LinkedHashMap<usize, core::task::Waker>>,
 }
 
 impl<T> Pool<T> {
   /// Creates a new `Pool` with an initial size of `pool_size` by calling `init` `pool_size` times.
   pub fn new(pool_size: usize, mut init: impl FnMut() -> T) -> Self {
-    let buffer = (0..pool_size).map(|_| Arc::new(Mutex::new(init()))).collect::<Vec<_>>();
-    Self {
-      buffer: Arc::new(RwLock::new(buffer)),
-      #[cfg(feature = "async")]
-      waiting_futures: Arc::default(),
-    }
+    (0..pool_size).map(|_| init()).collect()
   }
 
   /// Returns a future that resolves to a [`Lease`] when one is available
@@ -59,37 +57,27 @@ impl<T> Pool<T> {
   }
 
   /// Tries to get a [`Lease`] if one is available. This function does not block.
-  #[allow(unused_mut)]
   #[must_use]
   pub fn get(&self) -> Option<Lease<T>> {
-    self.buffer.read().iter().find_map(Lease::from_arc_mutex).map(|mut l| {
-      #[cfg(feature = "async")]
-      {
-        l.waiting_futures = Some(self.waiting_futures.clone());
-      }
-      l
-    })
+    self.inner.buffer.read().iter().find_map(|arc| Lease::from_arc_mutex(arc, self))
   }
 
   /// Returns a struct that implements the [`futures_core::Stream`] trait.
-  #[cfg(feature = "stream")]
-  pub fn stream(&self) -> pool_stream::PoolStream<'_, T> {
+  #[cfg(feature = "async")]
+  pub fn stream(&self) -> pool_stream::PoolStream<T> {
     pool_stream::PoolStream::new(self)
   }
 
   /// Tries to get an existing [`Lease`] if available and if not returns a new one that has been added to the pool.
   ///
   /// Calling this method repeatedly can cause the pool size to increase without bound.
-  #[allow(unused_mut)]
+  #[allow(clippy::missing_panics_doc)]
   pub fn get_or_new(&self, init: impl FnOnce() -> T) -> Lease<T> {
     self.get().map_or_else(
       || {
-        let mut lease = Lease::from(init());
-        self.append(&lease);
-        #[cfg(feature = "async")]
-        {
-          lease.waiting_futures = Some(self.waiting_futures.clone());
-        }
+        let mutex = Arc::new(Mutex::new(init()));
+        let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
+        self.associate(&lease);
         lease
       },
       |t| t,
@@ -97,7 +85,7 @@ impl<T> Pool<T> {
   }
 
   /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
-  #[allow(unused_mut)]
+  #[allow(clippy::missing_panics_doc)]
   pub fn get_or_new_with_cap(&self, cap: usize, init: impl FnOnce() -> T) -> Option<Lease<T>> {
     if let Some(t) = self.get() {
       Some(t)
@@ -105,12 +93,9 @@ impl<T> Pool<T> {
       if self.len() >= cap {
         return None;
       }
-      let mut lease = Lease::from(init());
-      self.append(&lease);
-      #[cfg(feature = "async")]
-      {
-        lease.waiting_futures = Some(self.waiting_futures.clone());
-      }
+      let mutex = Arc::new(Mutex::new(init()));
+      let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
+      self.associate(&lease);
       Some(lease)
     }
   }
@@ -118,7 +103,7 @@ impl<T> Pool<T> {
   /// Returns the size of the pool
   #[must_use]
   pub fn len(&self) -> usize {
-    self.buffer.read().len()
+    self.inner.buffer.read().len()
   }
 
   /// Sets the size of the pool to zero
@@ -126,14 +111,14 @@ impl<T> Pool<T> {
   /// This will disassociate all current [`Lease`]es and when they go out of scope the objects they're
   /// holding will be dropped
   pub fn clear(&self) {
-    self.buffer.write().clear()
+    self.inner.buffer.write().clear()
   }
 
   /// Resizes the pool to `pool_size`
   ///
   /// `init` is only called if the pool needs to grow.
   pub fn resize(&self, pool_size: usize, mut init: impl FnMut() -> T) {
-    let mut vec = self.buffer.write();
+    let mut vec = self.inner.buffer.write();
     let buffer_len = vec.len();
     match pool_size.cmp(&buffer_len) {
       Ordering::Equal => {}
@@ -142,24 +127,32 @@ impl<T> Pool<T> {
     }
   }
 
-  fn append(&self, lease: &Lease<T>) {
-    if self.buffer.read().iter().any(|a| Arc::ptr_eq(a, &lease.mutex)) {
+  /// Adds the [`Lease`] to this [`Pool`] if it isn't already part of the pool.
+  pub fn associate(&self, lease: &Lease<T>) {
+    if self.inner.buffer.read().iter().any(|a| Arc::ptr_eq(a, &lease.mutex)) {
       return;
     }
-    self.buffer.write().push(lease.mutex.clone())
+    self.inner.buffer.write().push(lease.mutex.clone())
   }
 
   /// Returns the number of currently available [`Lease`]es. Even if the return is non-zero calling [`get()`](Self::get())
   /// immediately afterward can still fail if multiple.
   #[must_use]
   pub fn available(&self) -> usize {
-    self.buffer.read().iter().filter(|b| !b.is_locked()).count()
+    self.inner.buffer.read().iter().filter(|b| !b.is_locked()).count()
   }
 
   /// Returns true if there are no items being stored.
   #[must_use]
   pub fn is_empty(&self) -> bool {
-    self.buffer.read().is_empty()
+    self.inner.buffer.read().is_empty()
+  }
+
+  /// Disassociates the returned ['Lease'] from this [`Pool`]
+  pub fn disassociate(&self, lease: &Lease<T>) {
+    if let Some(position) = self.inner.buffer.read().iter().position(|arc| Arc::ptr_eq(&lease.mutex, arc)) {
+      self.inner.buffer.write().swap_remove(position);
+    }
   }
 }
 
@@ -204,50 +197,54 @@ impl<T> core::fmt::Debug for Pool<T> {
     s.field(
       "availabilities",
       &ListDebugger {
-        i: self.buffer.read().iter().map(|m| !m.is_locked()),
+        i: self.inner.buffer.read().iter().map(|m| !m.is_locked()),
       },
     );
     s.finish()
   }
 }
 
+impl<T> Clone for Pool<T> {
+  fn clone(&self) -> Self {
+    Self { inner: self.inner.clone() }
+  }
+}
+
 impl<T> FromIterator<T> for Pool<T> {
   fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
     Self {
-      buffer: Arc::new(RwLock::new(iter.into_iter().map(Mutex::new).map(Arc::new).collect())),
-      #[cfg(feature = "async")]
-      waiting_futures: Arc::default(),
+      inner: Arc::new(PoolInner {
+        buffer: RwLock::new(iter.into_iter().map(Mutex::new).map(Arc::new).collect()),
+        #[cfg(feature = "async")]
+        waiting_futures: Mutex::default(),
+      }),
     }
   }
 }
 
-#[cfg(feature = "stream")]
+#[cfg(feature = "async")]
 mod pool_stream {
   use super::{async_lease::AsyncLease, Lease, Pool};
   use std::pin::Pin;
   use std::task::{Context, Poll};
 
   /// Implements the [`futures_core::Stream`] trait to return [`Lease`]es as they become available.
-  ///
-  /// This has a lifetime that is connected to the [`Pool`] it was created from.
   #[must_use]
-  pub struct PoolStream<'a, T> {
-    pool: &'a Pool<T>,
-    async_lease: AsyncLease<'a, T>,
-    _unpinned: core::marker::PhantomPinned,
+  pub struct PoolStream<T> {
+    pool: Pool<T>,
+    async_lease: AsyncLease<T>,
   }
 
-  impl<'a, T> PoolStream<'a, T> {
-    pub(crate) fn new(pool: &'a Pool<T>) -> Self {
+  impl<T> PoolStream<T> {
+    pub(crate) fn new(pool: &Pool<T>) -> Self {
       Self {
+        pool: pool.clone(),
         async_lease: pool.get_async(),
-        pool,
-        _unpinned: core::marker::PhantomPinned,
       }
     }
   }
 
-  impl<'a, T> futures_core::Stream for PoolStream<'a, T> {
+  impl<T> futures_core::Stream for PoolStream<T> {
     type Item = Lease<T>;
 
     #[allow(unsafe_code)]
@@ -256,7 +253,7 @@ mod pool_stream {
       // # Safety
       // we never move pool so the references to it that are
       // inside of AsyncLease are always valid
-      let this = unsafe { self.get_unchecked_mut() };
+      let this = self.get_mut();
       let async_lease = Pin::new(&mut this.async_lease);
       match async_lease.poll(cx) {
         Poll::Ready(l) => {
@@ -288,7 +285,7 @@ fn assert_lease_is_static() {
 pub struct Lease<T> {
   mutex: Arc<Mutex<T>>,
   #[cfg(feature = "async")]
-  waiting_futures: Option<Arc<Mutex<linked_hash_map::LinkedHashMap<usize, core::task::Waker>>>>,
+  pool: Pool<T>,
 }
 
 impl<T> Drop for Lease<T> {
@@ -301,25 +298,21 @@ impl<T> Drop for Lease<T> {
     }
     #[cfg(feature = "async")]
     {
-      if let Some(waiting_futures) = &self.waiting_futures {
-        let mut guard = waiting_futures.lock();
-        if let Some((_, waker)) = guard.pop_front() {
-          waker.wake();
-        }
+      if let Some((_, waker)) = self.pool.inner.waiting_futures.lock().pop_front() {
+        waker.wake();
       }
     }
   }
 }
 
 impl<T> Lease<T> {
-  fn from_arc_mutex(arc: &Arc<Mutex<T>>) -> Option<Self> {
-    #[allow(unsafe_code)]
+  fn from_arc_mutex(arc: &Arc<Mutex<T>>, #[allow(unused)] pool: &Pool<T>) -> Option<Self> {
     arc.try_lock().map(|guard| {
       std::mem::forget(guard);
       Self {
         mutex: arc.clone(),
         #[cfg(feature = "async")]
-        waiting_futures: None,
+        pool: pool.clone(),
       }
     })
   }
@@ -328,13 +321,6 @@ impl<T> Lease<T> {
 impl<T: core::fmt::Debug> core::fmt::Debug for Lease<T> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     self.deref().fmt(f)
-  }
-}
-
-impl<T> From<T> for Lease<T> {
-  fn from(t: T) -> Self {
-    // The mutex will unlock successfully so this unwrap will never fail
-    Self::from_arc_mutex(&Arc::new(Mutex::new(t))).unwrap()
   }
 }
 
@@ -393,33 +379,33 @@ mod async_lease {
   ///
   /// This is returned by the [`Pool::get_async()`](super::Pool::get_async()) method and will resolve once a [`Lease`](super::Lease) is ready.
   #[must_use]
-  pub struct AsyncLease<'a, T> {
+  pub struct AsyncLease<T> {
     id: usize,
-    pool: &'a super::Pool<T>,
+    pool: super::Pool<T>,
     first: bool,
     removed: bool,
   }
 
-  impl<'a, T> AsyncLease<'a, T> {
-    pub(crate) fn new(pool: &'a super::Pool<T>) -> Self {
+  impl<T> AsyncLease<T> {
+    pub(crate) fn new(pool: &super::Pool<T>) -> Self {
       Self {
         id: ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
-        pool,
+        pool: pool.clone(),
         first: true,
         removed: true,
       }
     }
   }
 
-  impl<'a, T> Drop for AsyncLease<'a, T> {
+  impl<T> Drop for AsyncLease<T> {
     fn drop(&mut self) {
       if !self.removed {
-        self.pool.waiting_futures.lock().remove(&self.id);
+        self.pool.inner.waiting_futures.lock().remove(&self.id);
       }
     }
   }
 
-  impl<'a, T> core::future::Future for AsyncLease<'a, T> {
+  impl<'a, T> core::future::Future for AsyncLease<T> {
     type Output = super::Lease<T>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -427,14 +413,14 @@ mod async_lease {
       match self.pool.get() {
         Some(t) => {
           if !self.first {
-            self.pool.waiting_futures.lock().remove(&self.id);
+            self.pool.inner.waiting_futures.lock().remove(&self.id);
             self.removed = true;
           }
           Poll::Ready(t)
         }
         None => {
           self.first = false;
-          self.pool.waiting_futures.lock().insert(self.id, cx.waker().clone());
+          self.pool.inner.waiting_futures.lock().insert(self.id, cx.waker().clone());
           self.removed = false;
           Poll::Pending
         }

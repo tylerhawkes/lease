@@ -1,6 +1,6 @@
 [package]
 name = "lease"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Tyler Hawkes <tyler.hawkes@gmail.com>"]
 edition = "2018"
 publish = ["crates-io"]
@@ -20,8 +20,8 @@ linked-hash-map = { version = "0.5", optional = true }
 parking_lot = { version = "0.11", default-features = false }
 
 [features]
-async = ["linked-hash-map"]
-stream = ["futures-core", "async"]
+async = ["linked-hash-map", "futures-core"]
+default = ["async"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
