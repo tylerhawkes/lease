@@ -7,11 +7,12 @@ fn test_pool() {
   assert_eq!(pool.available(), 2);
   assert_eq!(pool.len(), 2);
   let l1 = pool.get().unwrap();
-  println!("{:?}", pool);
-  assert_eq!(*l1, 1);
+  println!("{:?}, {:?}", pool, l1);
+  assert!(*l1 & 0x3 > 0);
   assert_eq!(pool.available(), 1);
   let l2 = pool.get().unwrap();
-  assert_eq!(*l2, 2);
+  let l2_val = *l2;
+  assert_ne!(*l2, *l1);
   assert_eq!(pool.available(), 0);
   assert!(pool.get().is_none());
   let l3 = pool.get_or_new(|| 3);
@@ -23,7 +24,7 @@ fn test_pool() {
   drop(l2);
   assert_eq!(pool.available(), 1);
   let l2 = pool.get().unwrap();
-  assert_eq!(*l2, 2);
+  assert_eq!(*l2, l2_val);
   assert_eq!(pool.available(), 0);
   assert!(pool.get().is_none());
   pool.resize(1, || unreachable!());
@@ -48,7 +49,7 @@ async fn test_async_pool() {
   }
 }
 
-#[cfg(feature = "stream")]
+#[cfg(feature = "async")]
 #[tokio::test]
 async fn test_async_pool_concurrent() {
   use futures::StreamExt;
