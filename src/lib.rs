@@ -295,7 +295,7 @@ impl<T> DerefMut for Lease<T> {
   }
 }
 
-impl<T, U> AsRef<U> for Lease<T>
+impl<T, U: ?Sized> AsRef<U> for Lease<T>
 where
   T: AsRef<U>,
 {
@@ -304,11 +304,17 @@ where
   }
 }
 
-impl<T, U> AsMut<U> for Lease<T>
+impl<T, U: ?Sized> AsMut<U> for Lease<T>
 where
   T: AsMut<U>,
 {
   fn as_mut(&mut self) -> &mut U {
     self.deref_mut().as_mut()
   }
+}
+
+#[test]
+fn test_unsized() {
+  fn bytes<B: AsRef<[u8]>>() {}
+  bytes::<Lease<Vec<u8>>>();
 }
