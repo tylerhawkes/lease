@@ -35,6 +35,7 @@ impl WaitingFutures {
 /// Implements the [`core::future::Future`] trait.
 ///
 /// This is returned by the [`Pool::get_async()`](super::Pool::get_async()) method and will resolve once a [`Lease`](super::Lease) is ready.
+#[allow(clippy::module_name_repetitions)]
 #[must_use]
 pub struct AsyncLease<T> {
   id: usize,

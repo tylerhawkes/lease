@@ -50,6 +50,24 @@ impl<T> Pool<T> {
     (0..pool_size).map(|_| init()).collect()
   }
 
+  /// Creates a new `Pool` with an initial size of `pool_size` by calling `init` `pool_size` times.
+  ///
+  /// # Errors
+  /// This returns the very first error returned by `init`
+  pub fn try_new<E>(pool_size: usize, mut init: impl FnMut() -> Result<T, E>) -> Result<Self, E> {
+    let buffer = lockfree::set::Set::new();
+    for _ in 0..pool_size {
+      buffer.insert(Arc::new(Wrapper::new(init()?))).ok();
+    }
+    Ok(Self {
+      inner: Arc::new(PoolInner {
+        buffer,
+        #[cfg(feature = "async")]
+        waiting_futures: async_::WaitingFutures::new(),
+      }),
+    })
+  }
+
   /// Returns a future that resolves to a [`Lease`] when one is available
   #[cfg(feature = "async")]
   pub fn get_async(&self) -> async_::AsyncLease<T> {
@@ -84,6 +102,25 @@ impl<T> Pool<T> {
     )
   }
 
+  /// Tries to get an existing [`Lease`] if available and if not tries to create a new one that has been added to the pool.
+  ///
+  /// Calling this method repeatedly can cause the pool size to increase without bound.
+  ///
+  /// # Errors
+  /// Returns an error if `init` errors
+  #[allow(clippy::missing_panics_doc)]
+  pub fn get_or_try_new<E>(&self, init: impl FnOnce() -> Result<T, E>) -> Result<Lease<T>, E> {
+    match self.get() {
+      None => {
+        let mutex = Arc::new(Wrapper::new(init()?));
+        let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
+        self.associate(&lease);
+        Ok(lease)
+      }
+      Some(l) => Ok(l),
+    }
+  }
+
   /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
   #[allow(clippy::missing_panics_doc)]
   pub fn get_or_new_with_cap(&self, cap: usize, init: impl FnOnce() -> T) -> Option<Lease<T>> {
@@ -97,6 +134,26 @@ impl<T> Pool<T> {
       let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
       self.associate(&lease);
       Some(lease)
+    }
+  }
+
+  /// Just like [`get_or_try_new()`](Self::get_or_try_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
+  ///
+  /// # Errors
+  /// Returns an error if `init` errors
+  #[allow(clippy::missing_panics_doc)]
+  pub fn get_or_try_new_with_cap<E>(&self, cap: usize, init: impl FnOnce() -> Result<T, E>) -> Result<Option<Lease<T>>, E> {
+    if let Some(t) = self.get() {
+      Ok(Some(t))
+    } else {
+      if self.len() >= cap {
+        return Ok(None);
+      }
+
+      let mutex = Arc::new(Wrapper::new(init()?));
+      let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
+      self.associate(&lease);
+      Ok(Some(lease))
     }
   }
 
@@ -126,6 +183,23 @@ impl<T> Pool<T> {
       self.inner.buffer.remove(&*g);
     });
     set.extend((self.len()..pool_size).map(|_| Arc::new(Wrapper::new(init()))));
+  }
+
+  /// Resizes the pool to `pool_size`
+  ///
+  /// `init` is only called if the pool needs to grow.
+  ///
+  /// # Errors
+  /// This returns the very first error returned by `init`
+  pub fn try_resize<E>(&self, pool_size: usize, mut init: impl FnMut() -> Result<T, E>) -> Result<(), E> {
+    let set = &self.inner.buffer;
+    set.iter().skip(pool_size).for_each(|g| {
+      set.remove(&*g);
+    });
+    for _ in self.len()..pool_size {
+      set.insert(Arc::new(Wrapper::new(init()?))).ok();
+    }
+    Ok(())
   }
 
   /// Adds the [`Lease`] to this [`Pool`] if it isn't already part of the pool.
