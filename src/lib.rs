@@ -273,6 +273,11 @@ impl<T> Pool<T> {
     Ok(())
   }
 
+  /// Just like the [`Extend`](core::iter::Extend) trait but doesn't require self to be mutable
+  pub fn extend<I: IntoIterator<Item = T>>(&self, iter: I) {
+    self.inner.buffer.extend(iter.into_iter().map(Wrapper::new))
+  }
+
   /// Adds new item to this [`Pool`]
   /// Use [`insert_with_lease()`](Self::insert_with_lease()) if you need a [`Lease`] back
   pub fn insert(&self, t: T) {
