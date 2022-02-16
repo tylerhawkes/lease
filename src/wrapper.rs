@@ -25,7 +25,7 @@ impl<T> Wrapper<T> {
 
 impl<T> core::hash::Hash for Wrapper<T> {
   fn hash<H: Hasher>(&self, state: &mut H) {
-    self.1.hash(state)
+    self.1.hash(state);
   }
 }
 

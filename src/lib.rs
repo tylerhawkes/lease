@@ -186,7 +186,7 @@ impl<T> Pool<T> {
     self.inner.buffer.iter().for_each(|g| {
       let arc: &Arc<_> = &*g;
       self.inner.buffer.remove(arc);
-    })
+    });
   }
 
   /// Resizes the pool to `pool_size`
@@ -269,7 +269,7 @@ impl<T: Default> Pool<T> {
 
   /// Just like [`resize()`](Self::resize()) but uses [`Default::default()`] as the `init` function
   pub fn resize_default(&self, pool_size: usize) {
-    self.resize(pool_size, T::default)
+    self.resize(pool_size, T::default);
   }
 }
 
