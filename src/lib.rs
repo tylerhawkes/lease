@@ -303,8 +303,8 @@ impl<T> Pool<T> {
     lease
   }
 
-  /// Returns the number of currently available [`Lease`]es. Even if the return is non-zero calling [`get()`](Self::get())
-  /// immediately afterward can still fail if multiple.
+  /// Returns the number of currently available [`Lease`]es. Even if the return is non-zero, calling [`get()`](Self::get())
+  /// immediately afterward can still fail if multiple threads have access to this pool.
   #[must_use]
   pub fn available(&self) -> usize {
     self.inner.buffer.iter().filter(|b| !b.is_locked()).count()
