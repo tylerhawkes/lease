@@ -220,7 +220,7 @@ impl<T> Pool<T> {
     self.inner.buffer.iter().next().is_none()
   }
 
-  /// Disassociates the returned ['Lease'] from this [`Pool`]
+  /// Disassociates the returned [`Lease`] from this [`Pool`]
   pub fn disassociate(&self, lease: &Lease<T>) {
     self.inner.buffer.remove(&lease.mutex);
   }
