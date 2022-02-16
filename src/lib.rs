@@ -44,9 +44,24 @@ struct PoolInner<T> {
   waiting_futures: async_::WaitingFutures,
 }
 
+impl<T> Default for PoolInner<T> {
+  fn default() -> Self {
+    Self {
+      buffer: lockfree::set::Set::default(),
+      #[cfg(feature = "async")]
+      waiting_futures: async_::WaitingFutures::default(),
+    }
+  }
+}
+
 impl<T> Pool<T> {
+  /// Creates a new empty `Pool`
+  pub fn new() -> Self {
+    Self::default()
+  }
+
   /// Creates a new `Pool` with an initial size of `pool_size` by calling `init` `pool_size` times.
-  pub fn new(pool_size: usize, mut init: impl FnMut() -> T) -> Self {
+  pub fn with_initial_size(pool_size: usize, mut init: impl FnMut() -> T) -> Self {
     (0..pool_size).map(|_| init()).collect()
   }
 
@@ -54,7 +69,7 @@ impl<T> Pool<T> {
   ///
   /// # Errors
   /// This returns the very first error returned by `init`
-  pub fn try_new<E>(pool_size: usize, mut init: impl FnMut() -> Result<T, E>) -> Result<Self, E> {
+  pub fn try_with_initial_size<E>(pool_size: usize, mut init: impl FnMut() -> Result<T, E>) -> Result<Self, E> {
     let buffer = lockfree::set::Set::new();
     for _ in 0..pool_size {
       buffer.insert(Arc::new(Wrapper::new(init()?))).ok();
@@ -95,7 +110,7 @@ impl<T> Pool<T> {
       || {
         let mutex = Arc::new(Wrapper::new(init()));
         let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
-        self.associate(&lease);
+        self.associate_lease(&lease);
         lease
       },
       |t| t,
@@ -114,7 +129,7 @@ impl<T> Pool<T> {
       None => {
         let mutex = Arc::new(Wrapper::new(init()?));
         let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
-        self.associate(&lease);
+        self.associate_lease(&lease);
         Ok(lease)
       }
       Some(l) => Ok(l),
@@ -132,7 +147,7 @@ impl<T> Pool<T> {
       }
       let mutex = Arc::new(Wrapper::new(init()));
       let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
-      self.associate(&lease);
+      self.associate_lease(&lease);
       Some(lease)
     }
   }
@@ -152,7 +167,7 @@ impl<T> Pool<T> {
 
       let mutex = Arc::new(Wrapper::new(init()?));
       let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
-      self.associate(&lease);
+      self.associate_lease(&lease);
       Ok(Some(lease))
     }
   }
@@ -202,9 +217,23 @@ impl<T> Pool<T> {
     Ok(())
   }
 
-  /// Adds the [`Lease`] to this [`Pool`] if it isn't already part of the pool.
-  pub fn associate(&self, lease: &Lease<T>) {
+  pub(crate) fn associate_lease(&self, lease: &Lease<T>) {
+    #[cfg(feature = "async")]
+    {
+      debug_assert_eq!(Arc::as_ptr(&self.inner) as usize, Arc::as_ptr(&lease.pool.inner) as usize);
+    }
     self.inner.buffer.insert(lease.mutex.clone()).ok();
+  }
+
+  /// Adds new item to this [`Pool`].
+  #[allow(clippy::missing_panics_doc)]
+  pub fn associate(&self, t: T) {
+    let arc = Arc::new(Wrapper::new(t));
+    self
+      .inner
+      .buffer
+      .insert(arc)
+      .unwrap_or_else(|_| unreachable!("Each new wrapper should be unique"));
   }
 
   /// Returns the number of currently available [`Lease`]es. Even if the return is non-zero calling [`get()`](Self::get())
@@ -246,7 +275,9 @@ impl<T: Default> Pool<T> {
 
 impl<T> Default for Pool<T> {
   fn default() -> Self {
-    Self::new(0, || unreachable!())
+    Self {
+      inner: Arc::new(PoolInner::default()),
+    }
   }
 }
 
@@ -263,9 +294,10 @@ impl<T> core::fmt::Debug for Pool<T> {
     }
 
     let mut s = f.debug_struct("Pool");
-    s.field("len", &self.len()).field("available", &self.available());
-    s.field("availabilities", &ListDebugger { set: &self.inner.buffer });
-    s.finish()
+    s.field("len", &self.len())
+      .field("available", &self.available())
+      .field("availabilities", &ListDebugger { set: &self.inner.buffer })
+      .finish()
   }
 }
 

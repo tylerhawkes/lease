@@ -3,6 +3,7 @@ use core::task::Waker;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+#[derive(Default)]
 pub(crate) struct WaitingFutures {
   wakers: lockfree::map::Map<usize, Waker>,
   order: lockfree::queue::Queue<usize>,
@@ -16,8 +17,9 @@ impl WaitingFutures {
     }
   }
   pub fn insert(&self, id: usize, waker: Waker) {
-    self.order.push(id);
+    // Push to wakers first so that it is available when returned by order.pop()
     self.wakers.insert(id, waker);
+    self.order.push(id);
   }
   pub fn remove(&self, id: usize) -> Option<()> {
     self.wakers.remove(&id).map(|_| ())
