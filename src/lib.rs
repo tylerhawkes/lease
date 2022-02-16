@@ -17,6 +17,7 @@
 #![deny(unsafe_code, missing_docs)]
 use self::wrapper::Wrapper;
 use core::ops::{Deref, DerefMut};
+use parking_lot::Mutex;
 use std::iter::FromIterator;
 use std::sync::Arc;
 
@@ -39,7 +40,7 @@ pub struct Pool<T> {
 }
 
 struct PoolInner<T> {
-  buffer: lockfree::set::Set<Arc<Wrapper<T>>>,
+  buffer: lockfree::set::Set<Wrapper<T>>,
   #[cfg(feature = "async")]
   waiting_futures: async_::WaitingFutures,
 }
@@ -72,7 +73,9 @@ impl<T> Pool<T> {
   pub fn try_with_initial_size<E>(pool_size: usize, mut init: impl FnMut() -> Result<T, E>) -> Result<Self, E> {
     let buffer = lockfree::set::Set::new();
     for _ in 0..pool_size {
-      buffer.insert(Arc::new(Wrapper::new(init()?))).ok();
+      buffer
+        .insert(Wrapper::new(init()?))
+        .unwrap_or_else(|_| unreachable!("Each new wrapper should be unique"));
     }
     Ok(Self {
       inner: Arc::new(PoolInner {
@@ -92,7 +95,7 @@ impl<T> Pool<T> {
   /// Tries to get a [`Lease`] if one is available. This function does not block.
   #[must_use]
   pub fn get(&self) -> Option<Lease<T>> {
-    self.inner.buffer.iter().find_map(|arc| Lease::from_arc_mutex(&arc, self))
+    self.inner.buffer.iter().find_map(|wrapper| Lease::from_arc_mutex(&wrapper, self))
   }
 
   /// Returns a struct that implements the [`futures_core::Stream`] trait.
@@ -108,7 +111,7 @@ impl<T> Pool<T> {
   pub fn get_or_new(&self, init: impl FnOnce() -> T) -> Lease<T> {
     self.get().map_or_else(
       || {
-        let mutex = Arc::new(Wrapper::new(init()));
+        let mutex = Wrapper::new(init());
         let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
         self.associate_lease(&lease);
         lease
@@ -127,7 +130,7 @@ impl<T> Pool<T> {
   pub fn get_or_try_new<E>(&self, init: impl FnOnce() -> Result<T, E>) -> Result<Lease<T>, E> {
     match self.get() {
       None => {
-        let mutex = Arc::new(Wrapper::new(init()?));
+        let mutex = Wrapper::new(init()?);
         let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
         self.associate_lease(&lease);
         Ok(lease)
@@ -145,7 +148,7 @@ impl<T> Pool<T> {
       if self.len() >= cap {
         return None;
       }
-      let mutex = Arc::new(Wrapper::new(init()));
+      let mutex = Wrapper::new(init());
       let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
       self.associate_lease(&lease);
       Some(lease)
@@ -165,7 +168,7 @@ impl<T> Pool<T> {
         return Ok(None);
       }
 
-      let mutex = Arc::new(Wrapper::new(init()?));
+      let mutex = Wrapper::new(init()?);
       let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
       self.associate_lease(&lease);
       Ok(Some(lease))
@@ -184,8 +187,8 @@ impl<T> Pool<T> {
   /// holding will be dropped
   pub fn clear(&self) {
     self.inner.buffer.iter().for_each(|g| {
-      let arc: &Arc<_> = &*g;
-      self.inner.buffer.remove(arc);
+      let wrapper: &Wrapper<_> = &g;
+      self.inner.buffer.remove(wrapper);
     });
   }
 
@@ -197,7 +200,7 @@ impl<T> Pool<T> {
     self.inner.buffer.iter().skip(pool_size).for_each(|g| {
       self.inner.buffer.remove(&*g);
     });
-    set.extend((self.len()..pool_size).map(|_| Arc::new(Wrapper::new(init()))));
+    set.extend((self.len()..pool_size).map(|_| Wrapper::new(init())));
   }
 
   /// Resizes the pool to `pool_size`
@@ -212,7 +215,9 @@ impl<T> Pool<T> {
       set.remove(&*g);
     });
     for _ in self.len()..pool_size {
-      set.insert(Arc::new(Wrapper::new(init()?))).ok();
+      set
+        .insert(Wrapper::new(init()?))
+        .unwrap_or_else(|_| unreachable!("Each new wrapper should be unique"));
     }
     Ok(())
   }
@@ -222,13 +227,13 @@ impl<T> Pool<T> {
     {
       debug_assert_eq!(Arc::as_ptr(&self.inner) as usize, Arc::as_ptr(&lease.pool.inner) as usize);
     }
-    self.inner.buffer.insert(lease.mutex.clone()).ok();
+    self.inner.buffer.insert(Wrapper(lease.mutex.clone())).ok();
   }
 
   /// Adds new item to this [`Pool`].
   #[allow(clippy::missing_panics_doc)]
   pub fn associate(&self, t: T) {
-    let arc = Arc::new(Wrapper::new(t));
+    let arc = Wrapper::new(t);
     self
       .inner
       .buffer
@@ -251,7 +256,9 @@ impl<T> Pool<T> {
 
   /// Disassociates the returned [`Lease`] from this [`Pool`]
   pub fn disassociate(&self, lease: &Lease<T>) {
-    self.inner.buffer.remove(&lease.mutex);
+    // This is the one unfortunate place where wrapping the arc is more costly.
+    // Since this function shouldn't be called in a tight loop, the clone should be fine
+    self.inner.buffer.remove(&Wrapper(lease.mutex.clone()));
   }
 }
 
@@ -284,7 +291,7 @@ impl<T> Default for Pool<T> {
 impl<T> core::fmt::Debug for Pool<T> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     struct ListDebugger<'a, T> {
-      set: &'a lockfree::set::Set<Arc<Wrapper<T>>>,
+      set: &'a lockfree::set::Set<Wrapper<T>>,
     }
 
     impl<T> core::fmt::Debug for ListDebugger<'_, T> {
@@ -311,7 +318,7 @@ impl<T> FromIterator<T> for Pool<T> {
   fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
     Self {
       inner: Arc::new(PoolInner {
-        buffer: iter.into_iter().map(Wrapper::new).map(Arc::new).collect(),
+        buffer: iter.into_iter().map(Wrapper::new).collect(),
         #[cfg(feature = "async")]
         waiting_futures: async_::WaitingFutures::new(),
       }),
@@ -336,7 +343,7 @@ fn assert_lease_is_static() {
 /// does so those can also be used to get access to the underlying data.  
 #[must_use]
 pub struct Lease<T> {
-  mutex: Arc<Wrapper<T>>,
+  mutex: Arc<Mutex<T>>,
   #[cfg(feature = "async")]
   pool: Pool<T>,
 }
@@ -357,7 +364,7 @@ impl<T> Drop for Lease<T> {
 }
 
 impl<T> Lease<T> {
-  fn from_arc_mutex(arc: &Arc<Wrapper<T>>, #[allow(unused)] pool: &Pool<T>) -> Option<Self> {
+  fn from_arc_mutex(arc: &Arc<Mutex<T>>, #[allow(unused)] pool: &Pool<T>) -> Option<Self> {
     arc.try_lock().map(|guard| {
       std::mem::forget(guard);
       Self {
