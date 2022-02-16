@@ -14,11 +14,13 @@
 //!     of leases that resolve anytime there is an available [`Lease`]
 
 #![cfg_attr(not(test), deny(warnings, clippy::all, clippy::pedantic, clippy::cargo))]
+#![allow(clippy::single_match_else)]
 #![deny(unsafe_code, missing_docs)]
 use self::wrapper::Wrapper;
+use core::future::Future;
+use core::iter::FromIterator;
 use core::ops::{Deref, DerefMut};
 use parking_lot::Mutex;
-use std::iter::FromIterator;
 use std::sync::Arc;
 
 #[cfg(feature = "async")]
@@ -86,16 +88,20 @@ impl<T> Pool<T> {
     })
   }
 
-  /// Returns a future that resolves to a [`Lease`] when one is available
-  #[cfg(feature = "async")]
-  pub fn get_async(&self) -> async_::AsyncLease<T> {
-    async_::AsyncLease::new(self)
-  }
-
   /// Tries to get a [`Lease`] if one is available. This function does not block.
+  ///
+  /// For an asynchronous version that returns when one is available use [`get_async()`](Self::get_async())
   #[must_use]
   pub fn get(&self) -> Option<Lease<T>> {
     self.inner.buffer.iter().find_map(|wrapper| Lease::from_arc_mutex(&wrapper, self))
+  }
+
+  /// Returns a future that resolves to a [`Lease`] when one is available
+  ///
+  /// Reqires the `async` feature to be enabled because it requires extra memory
+  #[cfg(feature = "async")]
+  pub fn get_async(&self) -> async_::AsyncLease<T> {
+    async_::AsyncLease::new(self)
   }
 
   /// Returns a struct that implements the [`futures_core::Stream`] trait.
@@ -104,74 +110,119 @@ impl<T> Pool<T> {
     async_::PoolStream::new(self)
   }
 
+  /// For the asynchronous version of this function see [`get_or_new_async()`](Self::get_or_new_async())
+  ///
   /// Tries to get an existing [`Lease`] if available and if not returns a new one that has been added to the pool.
   ///
   /// Calling this method repeatedly can cause the pool size to increase without bound.
-  #[allow(clippy::missing_panics_doc)]
   pub fn get_or_new(&self, init: impl FnOnce() -> T) -> Lease<T> {
-    self.get().map_or_else(
-      || {
-        let mutex = Wrapper::new(init());
-        let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
-        self.associate_lease(&lease);
-        lease
-      },
-      |t| t,
-    )
+    self.get().map_or_else(|| self.insert_with_lease(init()), |t| t)
   }
 
+  /// Asynchronous version of [`get_or_new()`](Self::get_or_new())
+  ///
+  /// Tries to get an existing [`Lease`] if available and if not returns a new one that has been added to the pool.
+  ///
+  /// Calling this method repeatedly can cause the pool size to increase without bound.
+  pub async fn get_or_new_async(&self, init: impl Future<Output = T>) -> Lease<T> {
+    match self.get() {
+      Some(lease) => lease,
+      None => self.insert_with_lease(init.await),
+    }
+  }
+
+  /// For the asynchronous version of this function see [`get_or_try_new_async()`](Self::get_or_try_new_async())
+  ///
   /// Tries to get an existing [`Lease`] if available and if not tries to create a new one that has been added to the pool.
   ///
   /// Calling this method repeatedly can cause the pool size to increase without bound.
   ///
   /// # Errors
   /// Returns an error if `init` errors
-  #[allow(clippy::missing_panics_doc)]
   pub fn get_or_try_new<E>(&self, init: impl FnOnce() -> Result<T, E>) -> Result<Lease<T>, E> {
     match self.get() {
-      None => {
-        let mutex = Wrapper::new(init()?);
-        let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
-        self.associate_lease(&lease);
-        Ok(lease)
-      }
+      None => Ok(self.insert_with_lease(init()?)),
       Some(l) => Ok(l),
     }
   }
 
-  /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
-  #[allow(clippy::missing_panics_doc)]
-  pub fn get_or_new_with_cap(&self, cap: usize, init: impl FnOnce() -> T) -> Option<Lease<T>> {
-    if let Some(t) = self.get() {
-      Some(t)
-    } else {
-      if self.len() >= cap {
-        return None;
-      }
-      let mutex = Wrapper::new(init());
-      let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
-      self.associate_lease(&lease);
-      Some(lease)
+  /// Asynchronous version of [`get_or_try_new()`](Self::get_or_try_new())
+  ///
+  /// Tries to get an existing [`Lease`] if available and if not tries to create a new one that has been added to the pool.
+  ///
+  /// Calling this method repeatedly can cause the pool size to increase without bound.
+  ///
+  /// # Errors
+  /// Returns an error if `init` errors
+  pub async fn get_or_try_new_async<E>(&self, init: impl Future<Output = Result<T, E>>) -> Result<Lease<T>, E> {
+    match self.get() {
+      None => Ok(self.insert_with_lease(init.await?)),
+      Some(l) => Ok(l),
     }
   }
 
+  /// For the asynchronous version of this function see [`get_or_new_with_cap_async()`](Self::get_or_new_with_cap_async())
+  ///
+  /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
+  pub fn get_or_new_with_cap(&self, cap: usize, init: impl FnOnce() -> T) -> Option<Lease<T>> {
+    match self.get() {
+      Some(t) => Some(t),
+      None => (self.len() < cap).then(|| self.insert_with_lease(init())),
+    }
+  }
+
+  /// Asynchronous version of [`get_or_new_with_cap()`](Self::get_or_new_with_cap())
+  ///
+  /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
+  pub async fn get_or_new_with_cap_async(&self, cap: usize, init: impl Future<Output = T>) -> Option<Lease<T>> {
+    match self.get() {
+      Some(t) => Some(t),
+      None => {
+        if self.len() < cap {
+          return None;
+        }
+        Some(self.insert_with_lease(init.await))
+      }
+    }
+  }
+
+  /// For the asynchronous version of this function see [`get_or_try_new_with_cap_async()`](Self::get_or_try_new_with_cap_async())
+  ///
   /// Just like [`get_or_try_new()`](Self::get_or_try_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
   ///
   /// # Errors
   /// Returns an error if `init` errors
-  #[allow(clippy::missing_panics_doc)]
   pub fn get_or_try_new_with_cap<E>(&self, cap: usize, init: impl FnOnce() -> Result<T, E>) -> Result<Option<Lease<T>>, E> {
-    if let Some(t) = self.get() {
-      Ok(Some(t))
-    } else {
-      if self.len() >= cap {
-        return Ok(None);
+    match self.get() {
+      Some(t) => Ok(Some(t)),
+      None => {
+        if self.len() >= cap {
+          return Ok(None);
+        }
+        Ok(Some(self.insert_with_lease(init()?)))
       }
+    }
+  }
 
-      let mutex = Wrapper::new(init()?);
-      let lease = Lease::from_arc_mutex(&mutex, self).unwrap();
-      self.associate_lease(&lease);
-      Ok(Some(lease))
+  /// Asynchronous version of [`get_or_try_new_with_cap()`](Self::get_or_try_new_with_cap())
+  ///
+  /// Just like [`get_or_try_new()`](Self::get_or_try_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
+  ///
+  /// # Errors
+  /// Returns an error if `init` errors
+  pub async fn get_or_try_new_with_cap_async<E>(
+    &self,
+    cap: usize,
+    init: impl Future<Output = Result<T, E>>,
+  ) -> Result<Option<Lease<T>>, E> {
+    match self.get() {
+      Some(t) => Ok(Some(t)),
+      None => {
+        if self.len() >= cap {
+          return Ok(None);
+        }
+        Ok(Some(self.insert_with_lease(init.await?)))
+      }
     }
   }
 
@@ -222,23 +273,29 @@ impl<T> Pool<T> {
     Ok(())
   }
 
-  pub(crate) fn associate_lease(&self, lease: &Lease<T>) {
-    #[cfg(feature = "async")]
-    {
-      debug_assert_eq!(Arc::as_ptr(&self.inner) as usize, Arc::as_ptr(&lease.pool.inner) as usize);
-    }
-    self.inner.buffer.insert(Wrapper(lease.mutex.clone())).ok();
-  }
-
-  /// Adds new item to this [`Pool`].
-  #[allow(clippy::missing_panics_doc)]
-  pub fn associate(&self, t: T) {
-    let arc = Wrapper::new(t);
+  /// Adds new item to this [`Pool`]
+  /// Use [`insert_with_lease()`](Self::insert_with_lease()) if you need a [`Lease`] back
+  pub fn insert(&self, t: T) {
+    let wrapper = Wrapper::new(t);
     self
       .inner
       .buffer
-      .insert(arc)
+      .insert(wrapper)
       .unwrap_or_else(|_| unreachable!("Each new wrapper should be unique"));
+    self.notify();
+  }
+
+  /// Adds new item to this [`Pool`] and returns a [`Lease`] that is ready to be used.
+  /// Use [`insert()`](Self::insert()) if you don't need a [`Lease`] back
+  pub fn insert_with_lease(&self, t: T) -> Lease<T> {
+    let wrapper = Wrapper::new(t);
+    let lease = Lease::from_arc_mutex(&wrapper, self).unwrap_or_else(|| unreachable!("Wrapper is unlocked when new"));
+    self
+      .inner
+      .buffer
+      .insert(wrapper)
+      .unwrap_or_else(|_| unreachable!("Each new wrapper should be unique"));
+    lease
   }
 
   /// Returns the number of currently available [`Lease`]es. Even if the return is non-zero calling [`get()`](Self::get())
@@ -259,6 +316,11 @@ impl<T> Pool<T> {
     // This is the one unfortunate place where wrapping the arc is more costly.
     // Since this function shouldn't be called in a tight loop, the clone should be fine
     self.inner.buffer.remove(&Wrapper(lease.mutex.clone()));
+  }
+
+  fn notify(&self) {
+    #[cfg(feature = "async")]
+    self.inner.waiting_futures.wake_next();
   }
 }
 
@@ -357,9 +419,7 @@ impl<T> Drop for Lease<T> {
       self.mutex.force_unlock();
     }
     #[cfg(feature = "async")]
-    {
-      self.pool.inner.waiting_futures.wake_next();
-    }
+    self.pool.notify();
   }
 }
 
