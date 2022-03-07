@@ -24,12 +24,12 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 #[cfg(feature = "async")]
-pub use async_::AsyncLease;
-#[cfg(feature = "async")]
-pub use async_::PoolStream;
+pub use async_::{AsyncLease, PoolStream};
+pub use init::InitPool;
 
 #[cfg(feature = "async")]
 mod async_;
+pub mod init;
 mod wrapper;
 
 /// A pool of objects of type `T` that can be leased out.
@@ -100,14 +100,14 @@ impl<T> Pool<T> {
   ///
   /// Reqires the `async` feature to be enabled because it requires extra memory
   #[cfg(feature = "async")]
-  pub fn get_async(&self) -> async_::AsyncLease<T> {
-    async_::AsyncLease::new(self)
+  pub fn get_async(&self) -> AsyncLease<T> {
+    AsyncLease::new(self)
   }
 
-  /// Returns a struct that implements the [`futures_core::Stream`] trait.
+  /// Returns a [`Stream`](futures_core::Stream) of `Lease`es
   #[cfg(feature = "async")]
-  pub fn stream(&self) -> async_::PoolStream<T> {
-    async_::PoolStream::new(self)
+  pub fn stream(&self) -> PoolStream<T> {
+    PoolStream::new(self)
   }
 
   /// For the asynchronous version of this function see [`get_or_new_async()`](Self::get_or_new_async())
