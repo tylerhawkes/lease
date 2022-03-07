@@ -167,10 +167,10 @@ impl<T, I: Init> InitPool<T, I> {
   where
     I::Output: Future<Output = T>,
   {
-    let (len, lease) = self.pool.get_with_len();
+    let lease = self.pool.get_or_len();
     match lease {
-      Some(t) => Some(t),
-      None => {
+      Ok(t) => Some(t),
+      Err(len) => {
         if len < cap {
           return None;
         }
@@ -190,10 +190,10 @@ impl<T, I: Init> InitPool<T, I> {
   where
     I::Output: Future<Output = Result<T, E>>,
   {
-    let (len, lease) = self.pool.get_with_len();
+    let lease = self.pool.get_or_len();
     match lease {
-      Some(t) => Ok(Some(t)),
-      None => {
+      Ok(t) => Ok(Some(t)),
+      Err(len) => {
         if len >= cap {
           return Ok(None);
         }

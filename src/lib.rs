@@ -96,8 +96,7 @@ impl<T> Pool<T> {
     self.inner.buffer.iter().find_map(|wrapper| Lease::from_arc_mutex(&wrapper, self))
   }
 
-  // the usize return of the len only matters if None is returned.
-  fn get_with_len(&self) -> (usize, Option<Lease<T>>) {
+  fn get_or_len(&self) -> Result<Lease<T>, usize> {
     let mut count = 0;
     let lease = self
       .inner
@@ -105,7 +104,7 @@ impl<T> Pool<T> {
       .iter()
       .inspect(|_| count += 1)
       .find_map(|wrapper| Lease::from_arc_mutex(&wrapper, self));
-    (count, lease)
+    lease.ok_or(count)
   }
 
   /// Returns a future that resolves to a [`Lease`] when one is available
@@ -179,21 +178,22 @@ impl<T> Pool<T> {
   ///
   /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
   pub fn get_or_new_with_cap(&self, cap: usize, init: impl FnOnce() -> T) -> Option<Lease<T>> {
-    let (len, lease) = self.get_with_len();
+    let lease = self.get_or_len();
     match lease {
-      Some(t) => Some(t),
-      None => (len < cap).then(|| self.insert_with_lease(init())),
+      Ok(t) => Some(t),
+      Err(len) => (len < cap).then(|| self.insert_with_lease(init())),
     }
   }
 
   /// Asynchronous version of [`get_or_new_with_cap()`](Self::get_or_new_with_cap())
   ///
   /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
+  // TODO: make this take a FnOnce() -> Future
   pub async fn get_or_new_with_cap_async(&self, cap: usize, init: impl Future<Output = T>) -> Option<Lease<T>> {
-    let (len, lease) = self.get_with_len();
+    let lease = self.get_or_len();
     match lease {
-      Some(t) => Some(t),
-      None => {
+      Ok(t) => Some(t),
+      Err(len) => {
         if len < cap {
           return None;
         }
@@ -209,10 +209,10 @@ impl<T> Pool<T> {
   /// # Errors
   /// Returns an error if `init` errors
   pub fn get_or_try_new_with_cap<E>(&self, cap: usize, init: impl FnOnce() -> Result<T, E>) -> Result<Option<Lease<T>>, E> {
-    let (len, lease) = self.get_with_len();
+    let lease = self.get_or_len();
     match lease {
-      Some(t) => Ok(Some(t)),
-      None => {
+      Ok(t) => Ok(Some(t)),
+      Err(len) => {
         if len >= cap {
           return Ok(None);
         }
@@ -227,15 +227,16 @@ impl<T> Pool<T> {
   ///
   /// # Errors
   /// Returns an error if `init` errors
+  // TODO: make this take a FnOnce() -> Future
   pub async fn get_or_try_new_with_cap_async<E>(
     &self,
     cap: usize,
     init: impl Future<Output = Result<T, E>>,
   ) -> Result<Option<Lease<T>>, E> {
-    let (len, lease) = self.get_with_len();
+    let lease = self.get_or_len();
     match lease {
-      Some(t) => Ok(Some(t)),
-      None => {
+      Ok(t) => Ok(Some(t)),
+      Err(len) => {
         if len >= cap {
           return Ok(None);
         }
