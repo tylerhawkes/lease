@@ -167,8 +167,7 @@ impl<T, I: Init> InitPool<T, I> {
   where
     I::Output: Future<Output = T>,
   {
-    let lease = self.pool.get_or_len();
-    match lease {
+    match self.pool.get_or_len() {
       Ok(t) => Some(t),
       Err(len) => {
         if len < cap {
@@ -190,8 +189,7 @@ impl<T, I: Init> InitPool<T, I> {
   where
     I::Output: Future<Output = Result<T, E>>,
   {
-    let lease = self.pool.get_or_len();
-    match lease {
+    match self.pool.get_or_len() {
       Ok(t) => Ok(Some(t)),
       Err(len) => {
         if len >= cap {
