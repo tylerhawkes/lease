@@ -22,7 +22,7 @@ pub trait Init {
   fn call(&self) -> Self::Output;
 }
 
-struct InitFn<T>(Box<dyn Fn() -> T>);
+pub struct InitFn<T>(Box<dyn Fn() -> T + Send + Sync>);
 impl<T> Init for InitFn<T> {
   type Output = T;
 
@@ -33,16 +33,16 @@ impl<T> Init for InitFn<T> {
 
 impl<F, T> From<F> for InitFn<T>
 where
-  F: Fn() -> T + 'static,
+  F: Fn() -> T + Send + Sync + 'static,
 {
   fn from(f: F) -> Self {
     Self(Box::new(f))
   }
 }
 
-struct InitFnAsync<T>(Box<dyn Fn() -> Pin<Box<dyn Future<Output = T>>>>);
+pub struct InitFnAsync<T>(Box<dyn Fn() -> Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>> + Send + Sync>);
 impl<T> Init for InitFnAsync<T> {
-  type Output = Pin<Box<dyn Future<Output = T>>>;
+  type Output = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
 
   fn call(&self) -> Self::Output {
     (self.0)()
@@ -51,14 +51,14 @@ impl<T> Init for InitFnAsync<T> {
 
 impl<T, F> From<F> for InitFnAsync<T>
 where
-  F: Fn() -> Pin<Box<dyn Future<Output = T>>> + 'static,
+  F: Fn() -> Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>> + Send + Sync + 'static,
 {
   fn from(f: F) -> Self {
     Self(Box::new(f))
   }
 }
 
-struct InitTryFn<T, E>(Box<dyn Fn() -> Result<T, E>>);
+pub struct InitTryFn<T, E>(Box<dyn Fn() -> Result<T, E> + Send + Sync>);
 impl<T, E> Init for InitTryFn<T, E> {
   type Output = Result<T, E>;
 
@@ -69,14 +69,14 @@ impl<T, E> Init for InitTryFn<T, E> {
 
 impl<F, T, E> From<F> for InitTryFn<T, E>
 where
-  F: Fn() -> Result<T, E> + 'static,
+  F: Fn() -> Result<T, E> + Send + Sync + 'static,
 {
   fn from(f: F) -> Self {
     Self(Box::new(f))
   }
 }
 
-struct InitTryFnAsync<T, E>(Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<T, E>>>>>);
+pub struct InitTryFnAsync<T, E>(Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send + Sync + 'static>> + Send + Sync>);
 impl<T, E> Init for InitTryFnAsync<T, E> {
   type Output = Pin<Box<dyn Future<Output = Result<T, E>>>>;
 
@@ -87,7 +87,7 @@ impl<T, E> Init for InitTryFnAsync<T, E> {
 
 impl<T, E, F> From<F> for InitTryFnAsync<T, E>
 where
-  F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>>>> + 'static,
+  F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send + Sync + 'static>> + Send + Sync + 'static,
 {
   fn from(f: F) -> Self {
     Self(Box::new(f))
@@ -155,6 +155,64 @@ impl<T, I: Init> InitPool<T, I> {
       None => Ok(self.pool.insert_with_lease(self.init.call().await?)),
     }
   }
+
+  pub fn get_or_new_with_cap(&self, cap: usize) -> Option<Lease<T>>
+  where
+    I::Output: Into<T>,
+  {
+    self.pool.get_or_new_with_cap(cap, || self.init.call().into())
+  }
+
+  pub async fn get_or_new_with_cap_async(&self, cap: usize) -> Option<Lease<T>>
+  where
+    I::Output: Future<Output = T>,
+  {
+    let (len, lease) = self.pool.get_with_len();
+    match lease {
+      Some(t) => Some(t),
+      None => {
+        if len < cap {
+          return None;
+        }
+        Some(self.pool.insert_with_lease(self.init.call().await))
+      }
+    }
+  }
+
+  pub fn get_or_try_new_with_cap<E>(&self, cap: usize) -> Result<Option<Lease<T>>, E>
+  where
+    I::Output: Into<Result<T, E>>,
+  {
+    self.pool.get_or_try_new_with_cap(cap, || self.init.call().into())
+  }
+
+  pub async fn get_or_try_new_with_cap_async<E>(&self, cap: usize) -> Result<Option<Lease<T>>, E>
+  where
+    I::Output: Future<Output = Result<T, E>>,
+  {
+    let (len, lease) = self.pool.get_with_len();
+    match lease {
+      Some(t) => Ok(Some(t)),
+      None => {
+        if len >= cap {
+          return Ok(None);
+        }
+        Ok(Some(self.pool.insert_with_lease(self.init.call().await?)))
+      }
+    }
+  }
+
+  pub fn len(&self) -> usize {
+    self.pool.len()
+  }
+
+  pub fn clear(&self) {
+    self.pool.clear();
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.pool.is_empty()
+  }
 }
 
 #[cfg(test)]
@@ -170,7 +228,8 @@ mod tests {
 
   #[tokio::test]
   async fn test_async() {
-    let init_pool = InitPool::<u8, InitFnAsync<_>>::new_from(|| Box::pin(async { 42_u8 }) as Pin<Box<dyn Future<Output = u8>>>);
+    let init_pool =
+      InitPool::<u8, InitFnAsync<_>>::new_from(|| Box::pin(async { 42_u8 }) as Pin<Box<dyn Future<Output = u8> + Send + Sync + 'static>>);
     assert!(init_pool.get().is_none());
     assert_eq!(*init_pool.get_or_new_async().await, 42);
   }
@@ -185,7 +244,7 @@ mod tests {
   #[tokio::test]
   async fn test_try_async() {
     let init_pool = InitPool::<u8, InitTryFnAsync<_, core::convert::Infallible>>::new_from(|| {
-      Box::pin(async { Ok(42_u8) }) as Pin<Box<dyn Future<Output = _>>>
+      Box::pin(async { Ok(42_u8) }) as Pin<Box<dyn Future<Output = _> + Send + Sync + 'static>>
     });
     assert!(init_pool.get().is_none());
     assert_eq!(*init_pool.get_or_try_new_async().await.unwrap(), 42);
