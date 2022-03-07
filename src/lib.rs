@@ -24,12 +24,12 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 #[cfg(feature = "async")]
-pub use async_::AsyncLease;
-#[cfg(feature = "async")]
-pub use async_::PoolStream;
+pub use async_::{AsyncLease, PoolStream};
+pub use init::InitPool;
 
 #[cfg(feature = "async")]
 mod async_;
+pub mod init;
 mod wrapper;
 
 /// A pool of objects of type `T` that can be leased out.
@@ -96,18 +96,29 @@ impl<T> Pool<T> {
     self.inner.buffer.iter().find_map(|wrapper| Lease::from_arc_mutex(&wrapper, self))
   }
 
+  fn get_or_len(&self) -> Result<Lease<T>, usize> {
+    let mut count = 0;
+    let lease = self
+      .inner
+      .buffer
+      .iter()
+      .inspect(|_| count += 1)
+      .find_map(|wrapper| Lease::from_arc_mutex(&wrapper, self));
+    lease.ok_or(count)
+  }
+
   /// Returns a future that resolves to a [`Lease`] when one is available
   ///
   /// Reqires the `async` feature to be enabled because it requires extra memory
   #[cfg(feature = "async")]
-  pub fn get_async(&self) -> async_::AsyncLease<T> {
-    async_::AsyncLease::new(self)
+  pub fn get_async(&self) -> AsyncLease<T> {
+    AsyncLease::new(self)
   }
 
-  /// Returns a struct that implements the [`futures_core::Stream`] trait.
+  /// Returns a [`Stream`](futures_core::Stream) of `Lease`es
   #[cfg(feature = "async")]
-  pub fn stream(&self) -> async_::PoolStream<T> {
-    async_::PoolStream::new(self)
+  pub fn stream(&self) -> PoolStream<T> {
+    PoolStream::new(self)
   }
 
   /// For the asynchronous version of this function see [`get_or_new_async()`](Self::get_or_new_async())
@@ -124,6 +135,7 @@ impl<T> Pool<T> {
   /// Tries to get an existing [`Lease`] if available and if not returns a new one that has been added to the pool.
   ///
   /// Calling this method repeatedly can cause the pool size to increase without bound.
+  // TODO: make this take a FnOnce() -> Future
   pub async fn get_or_new_async(&self, init: impl Future<Output = T>) -> Lease<T> {
     match self.get() {
       Some(lease) => lease,
@@ -154,6 +166,7 @@ impl<T> Pool<T> {
   ///
   /// # Errors
   /// Returns an error if `init` errors
+  // TODO: make this take a FnOnce() -> Future
   pub async fn get_or_try_new_async<E>(&self, init: impl Future<Output = Result<T, E>>) -> Result<Lease<T>, E> {
     match self.get() {
       None => Ok(self.insert_with_lease(init.await?)),
@@ -165,20 +178,21 @@ impl<T> Pool<T> {
   ///
   /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
   pub fn get_or_new_with_cap(&self, cap: usize, init: impl FnOnce() -> T) -> Option<Lease<T>> {
-    match self.get() {
-      Some(t) => Some(t),
-      None => (self.len() < cap).then(|| self.insert_with_lease(init())),
+    match self.get_or_len() {
+      Ok(t) => Some(t),
+      Err(len) => (len < cap).then(|| self.insert_with_lease(init())),
     }
   }
 
   /// Asynchronous version of [`get_or_new_with_cap()`](Self::get_or_new_with_cap())
   ///
   /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
+  // TODO: make this take a FnOnce() -> Future
   pub async fn get_or_new_with_cap_async(&self, cap: usize, init: impl Future<Output = T>) -> Option<Lease<T>> {
-    match self.get() {
-      Some(t) => Some(t),
-      None => {
-        if self.len() < cap {
+    match self.get_or_len() {
+      Ok(t) => Some(t),
+      Err(len) => {
+        if len < cap {
           return None;
         }
         Some(self.insert_with_lease(init.await))
@@ -193,10 +207,10 @@ impl<T> Pool<T> {
   /// # Errors
   /// Returns an error if `init` errors
   pub fn get_or_try_new_with_cap<E>(&self, cap: usize, init: impl FnOnce() -> Result<T, E>) -> Result<Option<Lease<T>>, E> {
-    match self.get() {
-      Some(t) => Ok(Some(t)),
-      None => {
-        if self.len() >= cap {
+    match self.get_or_len() {
+      Ok(t) => Ok(Some(t)),
+      Err(len) => {
+        if len >= cap {
           return Ok(None);
         }
         Ok(Some(self.insert_with_lease(init()?)))
@@ -210,15 +224,16 @@ impl<T> Pool<T> {
   ///
   /// # Errors
   /// Returns an error if `init` errors
+  // TODO: make this take a FnOnce() -> Future
   pub async fn get_or_try_new_with_cap_async<E>(
     &self,
     cap: usize,
     init: impl Future<Output = Result<T, E>>,
   ) -> Result<Option<Lease<T>>, E> {
-    match self.get() {
-      Some(t) => Ok(Some(t)),
-      None => {
-        if self.len() >= cap {
+    match self.get_or_len() {
+      Ok(t) => Ok(Some(t)),
+      Err(len) => {
+        if len >= cap {
           return Ok(None);
         }
         Ok(Some(self.insert_with_lease(init.await?)))
