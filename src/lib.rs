@@ -290,7 +290,7 @@ impl<T> Pool<T> {
 
   /// Just like the [`Extend`](core::iter::Extend) trait but doesn't require self to be mutable
   pub fn extend<I: IntoIterator<Item = T>>(&self, iter: I) {
-    self.inner.buffer.extend(iter.into_iter().map(Wrapper::new))
+    self.inner.buffer.extend(iter.into_iter().map(Wrapper::new));
   }
 
   /// Adds new item to this [`Pool`]
@@ -331,13 +331,14 @@ impl<T> Pool<T> {
     self.inner.buffer.iter().next().is_none()
   }
 
-  /// Disassociates the returned [`Lease`] from this [`Pool`]
+  /// Disassociates the [`Lease`] from this [`Pool`]
   pub fn disassociate(&self, lease: &Lease<T>) {
     // This is the one unfortunate place where wrapping the arc is more costly.
     // Since this function shouldn't be called in a tight loop, the clone should be fine
     self.inner.buffer.remove(&Wrapper(lease.mutex.clone()));
   }
 
+  #[cfg_attr(not(feature = "async"), allow(clippy::unused_self))]
   fn notify(&self) {
     #[cfg(feature = "async")]
     self.inner.waiting_futures.wake_next();
