@@ -507,8 +507,11 @@ where
   }
 }
 
-#[test]
-fn test_unsized() {
+#[allow(unused)]
+fn asserts() {
   fn bytes<B: AsRef<[u8]>>() {}
   bytes::<Lease<Vec<u8>>>();
+  fn send_sync_static_clone<F: Send + Sync + 'static + Clone>() {}
+  send_sync_static_clone::<Pool<u8>>();
+  send_sync_static_clone::<init::InitPool<u8, init::InitFn<u8>>>();
 }

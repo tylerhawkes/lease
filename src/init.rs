@@ -306,6 +306,15 @@ impl<T, I: Init> InitPool<T, I> {
   }
 }
 
+impl<T, I: Init> Clone for InitPool<T, I> {
+  fn clone(&self) -> Self {
+    Self {
+      pool: self.pool.clone(),
+      init: self.init.clone(),
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -339,5 +348,25 @@ mod tests {
     });
     assert!(init_pool.get().is_none());
     assert_eq!(*init_pool.get_or_try_new_async().await.unwrap(), 42);
+  }
+
+  #[tokio::test]
+  async fn test_clone() {
+    let init_pool = InitPool::<u8, InitTryFnAsync<_, core::convert::Infallible>>::new_from(|| {
+      Box::pin(async { Ok(42_u8) }) as Pin<Box<dyn Future<Output = _> + Send + Sync + 'static>>
+    });
+    let init_pool_2 = init_pool.clone();
+    assert!(init_pool.get().is_none());
+    assert_eq!(init_pool.len(), 0);
+    assert_eq!(init_pool_2.len(), 0);
+    let value = init_pool.get_or_try_new_async().await.unwrap();
+    assert_eq!(*value, 42);
+    assert_eq!(init_pool.len(), 1);
+    assert_eq!(init_pool_2.len(), 1);
+    assert_eq!(init_pool.available(), 0);
+    assert_eq!(init_pool_2.available(), 0);
+    drop(value);
+    assert_eq!(init_pool.available(), 1);
+    assert_eq!(init_pool_2.available(), 1);
   }
 }
