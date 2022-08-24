@@ -4,7 +4,7 @@
 //! because the purpose of this pool is that all items are guaranteed to be
 //! initialized in the same way.
 //!
-//! The Init[Try]Fn[Async] structs are really just for convenience to not have
+//! The Init\[Try\]Fn\[Async\] structs are really just for convenience to not have
 //! to specify so many things.
 
 #![allow(clippy::module_name_repetitions)]
@@ -110,6 +110,7 @@ where
 
 impl<T, I: Init> InitPool<T, I> {
   /// Creates a new empty `Pool`
+  #[inline]
   pub fn new(init: I) -> Self {
     Self {
       pool: Pool::default(),
@@ -117,6 +118,7 @@ impl<T, I: Init> InitPool<T, I> {
     }
   }
   /// Creates a new empty `Pool` that will be initialized using `init`
+  #[inline]
   pub fn new_from<O: Into<I>>(init: O) -> Self {
     Self::new(init.into())
   }
@@ -124,6 +126,7 @@ impl<T, I: Init> InitPool<T, I> {
   /// Returns the output of the initializer so that consumers can get an initialized value
   /// that isn't tied to the pool
   #[allow(clippy::must_use_candidate)]
+  #[inline]
   pub fn init(&self) -> I::Output {
     self.init.call()
   }
@@ -132,6 +135,7 @@ impl<T, I: Init> InitPool<T, I> {
   ///
   /// For an asynchronous version that returns when one is available use [`get_async()`](Self::get_async())
   #[must_use]
+  #[inline]
   pub fn get(&self) -> Option<Lease<T>> {
     self.pool.get()
   }
@@ -140,12 +144,14 @@ impl<T, I: Init> InitPool<T, I> {
   ///
   /// Reqires the `async` feature to be enabled because it requires extra memory
   #[cfg(feature = "async")]
+  #[inline]
   pub fn get_async(&self) -> crate::AsyncLease<T> {
     self.pool.get_async()
   }
 
   /// Returns a [`Stream`](futures_core::Stream) of `Lease`es
   #[cfg(feature = "async")]
+  #[inline]
   pub fn stream(&self) -> crate::PoolStream<T> {
     crate::PoolStream::new(&self.pool)
   }
@@ -155,6 +161,7 @@ impl<T, I: Init> InitPool<T, I> {
   /// Tries to get an existing [`Lease`] if available and if not returns a new one that has been added to the pool.
   ///
   /// Calling this method repeatedly can cause the pool size to increase without bound.
+  #[inline]
   pub fn get_or_new(&self) -> Lease<T>
   where
     I::Output: Into<T>,
@@ -167,14 +174,12 @@ impl<T, I: Init> InitPool<T, I> {
   /// Tries to get an existing [`Lease`] if available and if not returns a new one that has been added to the pool.
   ///
   /// Calling this method repeatedly can cause the pool size to increase without bound.
+  #[inline]
   pub async fn get_or_new_async(&self) -> Lease<T>
   where
     I::Output: Future<Output = T>,
   {
-    match self.pool.get() {
-      Some(lease) => lease,
-      None => self.pool.insert_with_lease(self.init.call().await),
-    }
+    self.pool.get_or_new_async(|| self.init.call()).await
   }
 
   /// For the asynchronous version of this function see [`get_or_try_new_async()`](Self::get_or_try_new_async())
@@ -185,6 +190,7 @@ impl<T, I: Init> InitPool<T, I> {
   ///
   /// # Errors
   /// Returns an error if the stored initializer errors
+  #[inline]
   pub fn get_or_try_new<E>(&self) -> Result<Lease<T>, E>
   where
     I::Output: Into<Result<T, E>>,
@@ -200,14 +206,12 @@ impl<T, I: Init> InitPool<T, I> {
   ///
   /// # Errors
   /// Returns an error if the stored initializer errors
+  #[inline]
   pub async fn get_or_try_new_async<E>(&self) -> Result<Lease<T>, E>
   where
     I::Output: Future<Output = Result<T, E>>,
   {
-    match self.get() {
-      Some(lease) => Ok(lease),
-      None => Ok(self.pool.insert_with_lease(self.init.call().await?)),
-    }
+    self.pool.get_or_try_new_async(|| self.init.call()).await
   }
 
   /// For the asynchronous version of this function see [`get_or_new_with_cap_async()`](Self::get_or_new_with_cap_async())
@@ -223,20 +227,14 @@ impl<T, I: Init> InitPool<T, I> {
 
   /// Asynchronous version of [`get_or_new_with_cap()`](Self::get_or_new_with_cap())
   ///
-  /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
-  pub async fn get_or_new_with_cap_async(&self, cap: usize) -> Option<Lease<T>>
+  /// Just like [`get_or_new()`](Self::get_or_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then it waits for an open lease.
+  #[inline]
+  #[cfg(feature = "async")]
+  pub async fn get_or_new_with_cap_async(&self, cap: usize) -> Lease<T>
   where
     I::Output: Future<Output = T>,
   {
-    match self.pool.get_or_len() {
-      Ok(t) => Some(t),
-      Err(len) => {
-        if len < cap {
-          return None;
-        }
-        Some(self.pool.insert_with_lease(self.init.call().await))
-      }
-    }
+    self.pool.get_or_new_with_cap_async(cap, || self.init.call()).await
   }
 
   /// For the asynchronous version of this function see [`get_or_try_new_with_cap_async()`](Self::get_or_try_new_with_cap_async())
@@ -245,6 +243,7 @@ impl<T, I: Init> InitPool<T, I> {
   ///
   /// # Errors
   /// Returns an error if the stored initializer errors
+  #[inline]
   pub fn get_or_try_new_with_cap<E>(&self, cap: usize) -> Result<Option<Lease<T>>, E>
   where
     I::Output: Into<Result<T, E>>,
@@ -254,27 +253,22 @@ impl<T, I: Init> InitPool<T, I> {
 
   /// Asynchronous version of [`get_or_try_new_with_cap()`](Self::get_or_try_new_with_cap())
   ///
-  /// Just like [`get_or_try_new()`](Self::get_or_try_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then `None` is returned.
+  /// Just like [`get_or_try_new()`](Self::get_or_try_new()) but caps the size of the pool. Once [`len()`](Self::len()) == `cap` then it waits for an open lease.
   ///
   /// # Errors
   /// Returns an error if the stored initializer errors
-  pub async fn get_or_try_new_with_cap_async<E>(&self, cap: usize) -> Result<Option<Lease<T>>, E>
+  #[inline]
+  #[cfg(feature = "async")]
+  pub async fn get_or_try_new_with_cap_async<E>(&self, cap: usize) -> Result<Lease<T>, E>
   where
     I::Output: Future<Output = Result<T, E>>,
   {
-    match self.pool.get_or_len() {
-      Ok(t) => Ok(Some(t)),
-      Err(len) => {
-        if len >= cap {
-          return Ok(None);
-        }
-        Ok(Some(self.pool.insert_with_lease(self.init.call().await?)))
-      }
-    }
+    self.pool.get_or_try_new_with_cap_async(cap, || self.init.call()).await
   }
 
   /// Returns the size of the pool
   #[must_use]
+  #[inline]
   pub fn len(&self) -> usize {
     self.pool.len()
   }
@@ -283,6 +277,7 @@ impl<T, I: Init> InitPool<T, I> {
   ///
   /// This will disassociate all current [`Lease`]es and when they go out of scope the objects they're
   /// holding will be dropped
+  #[inline]
   pub fn clear(&self) {
     self.pool.clear();
   }
@@ -290,17 +285,20 @@ impl<T, I: Init> InitPool<T, I> {
   /// Returns the number of currently available [`Lease`]es. Even if the return is non-zero, calling [`get()`](Self::get())
   /// immediately afterward can still fail if multiple threads have access to this pool.
   #[must_use]
+  #[inline]
   pub fn available(&self) -> usize {
     self.pool.available()
   }
 
   /// Returns true if there are no items being stored.
   #[must_use]
+  #[inline]
   pub fn is_empty(&self) -> bool {
     self.pool.is_empty()
   }
 
   /// Disassociates the [`Lease`] from this [`InitPool`]
+  #[inline]
   pub fn disassociate(&self, lease: &Lease<T>) {
     self.pool.disassociate(lease);
   }

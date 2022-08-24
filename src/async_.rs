@@ -50,7 +50,7 @@ impl<T> AsyncLease<T> {
   pub(crate) fn new(pool: &super::Pool<T>) -> Self {
     static ID: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
     Self {
-      id: ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+      id: ID.fetch_add(1, core::sync::atomic::Ordering::SeqCst),
       pool: pool.clone(),
       first: true,
       removed: true,
@@ -66,7 +66,7 @@ impl<T> Drop for AsyncLease<T> {
   }
 }
 
-impl<'a, T> core::future::Future for AsyncLease<T> {
+impl<T> core::future::Future for AsyncLease<T> {
   type Output = super::Lease<T>;
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
