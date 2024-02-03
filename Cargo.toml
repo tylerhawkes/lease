@@ -1,6 +1,6 @@
 [package]
 name = "lease"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["Tyler Hawkes <tyler.hawkes@gmail.com>"]
 edition = "2021"
 publish = ["crates-io"]
@@ -10,17 +10,27 @@ repository = "https://github.com/tylerhawkes/lease"
 documentation = "https://docs.rs/lease"
 readme = "README.md"
 keywords = ["pool", "object", "async", "cache"]
-categories = ["data-structures", "asynchronous", "caching", "concurrency", "memory-management"]
+categories = [
+  "data-structures",
+  "asynchronous",
+  "caching",
+  "concurrency",
+  "memory-management",
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 futures-core = { version = "0.3", optional = true, default-features = false }
+futures-channel = { version = "0.3", optional = true }
 lockfree = "0.5"
-parking_lot = { version = "0.12", default-features = false }
+parking_lot = { version = "0.12", default-features = false, features = [
+  "arc_lock",
+  "send_guard",
+] }
 
 [features]
-async = ["futures-core"]
+async = ["futures-core", "futures-channel"]
 default = []
 
 [dev-dependencies]

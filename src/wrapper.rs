@@ -6,9 +6,16 @@ use std::sync::Arc;
 
 // Internal struct used to make the lockfree Set happy about Hash and Ord
 #[must_use]
-pub(crate) struct Wrapper<T>(pub(crate) Arc<Mutex<T>>);
+#[repr(transparent)]
+pub(crate) struct Wrapper<T: Send + Sync + 'static>(pub(crate) Arc<Mutex<T>>);
 
-impl<T> Deref for Wrapper<T> {
+impl<T: Send + Sync + 'static> Clone for Wrapper<T> {
+  fn clone(&self) -> Self {
+    Self(Arc::clone(&self.0))
+  }
+}
+
+impl<T: Send + Sync + 'static> Deref for Wrapper<T> {
   type Target = Arc<Mutex<T>>;
 
   fn deref(&self) -> &Self::Target {
@@ -16,7 +23,7 @@ impl<T> Deref for Wrapper<T> {
   }
 }
 
-impl<T> Wrapper<T> {
+impl<T: Send + Sync + 'static> Wrapper<T> {
   pub(crate) fn new(t: T) -> Self {
     Self(Arc::new(Mutex::new(t)))
   }
@@ -26,27 +33,27 @@ impl<T> Wrapper<T> {
   }
 }
 
-impl<T> core::hash::Hash for Wrapper<T> {
+impl<T: Send + Sync + 'static> core::hash::Hash for Wrapper<T> {
   fn hash<H: Hasher>(&self, state: &mut H) {
     self.as_usize().hash(state);
   }
 }
 
-impl<T> core::cmp::PartialEq for Wrapper<T> {
+impl<T: Send + Sync + 'static> core::cmp::PartialEq for Wrapper<T> {
   fn eq(&self, other: &Self) -> bool {
     self.as_usize() == other.as_usize()
   }
 }
 
-impl<T> core::cmp::Eq for Wrapper<T> {}
+impl<T: Send + Sync + 'static> core::cmp::Eq for Wrapper<T> {}
 
-impl<T> core::cmp::PartialOrd for Wrapper<T> {
+impl<T: Send + Sync + 'static> core::cmp::PartialOrd for Wrapper<T> {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-    self.as_usize().partial_cmp(&other.as_usize())
+    Some(self.cmp(other))
   }
 }
 
-impl<T> core::cmp::Ord for Wrapper<T> {
+impl<T: Send + Sync + 'static> core::cmp::Ord for Wrapper<T> {
   fn cmp(&self, other: &Self) -> Ordering {
     self.as_usize().cmp(&other.as_usize())
   }
