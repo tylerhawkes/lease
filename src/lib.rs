@@ -41,17 +41,17 @@ mod wrapper;
 /// This struct implements [`std::iter::FromIterator`] so you can create it from an iterator
 /// by calling [`std::iter::Iterator::collect()`]
 #[must_use]
-pub struct Pool<T: Send + Sync + 'static> {
+pub struct Pool<T> {
   inner: Arc<PoolInner<T>>,
 }
 
-struct PoolInner<T: Send + Sync + 'static> {
+struct PoolInner<T> {
   buffer: lockfree::set::Set<Wrapper<T>>,
   #[cfg(feature = "async")]
   waiting_futures: Arc<async_::WaitingFutures<T>>,
 }
 
-impl<T: Send + Sync + 'static> Default for PoolInner<T> {
+impl<T> Default for PoolInner<T> {
   #[inline]
   fn default() -> Self {
     Self {
@@ -63,6 +63,13 @@ impl<T: Send + Sync + 'static> Default for PoolInner<T> {
 }
 
 impl<T: Send + Sync + 'static> Pool<T> {
+  /// Turns this pool into an [`InitPool`] using the provided initialization function
+  pub fn into_init_pool<I: init::Init>(self, init: I) -> InitPool<T, I> {
+    InitPool::new_from_pool(self, init)
+  }
+}
+
+impl<T> Pool<T> {
   /// Turns this [`Pool`] into a [`LockedPool`]
   ///
   /// # Errors
@@ -82,11 +89,6 @@ impl<T: Send + Sync + 'static> Pool<T> {
     };
 
     Ok(LockedPool { pool: self, len })
-  }
-
-  /// Turns this pool into an [`InitPool`] using the provided initialization function
-  pub fn into_init_pool<I: init::Init>(self, init: I) -> InitPool<T, I> {
-    InitPool::new_from_pool(self, init)
   }
 
   /// Creates a new empty [`Pool`]
@@ -179,11 +181,10 @@ impl<T: Send + Sync + 'static> Pool<T> {
   /// Calling this method repeatedly can cause the pool size to increase without bound.
   #[inline]
   pub fn try_get_or_new(&self, init: impl FnOnce() -> T) -> Lease<T> {
-    let lease = self.try_get().unwrap_or_else(|| self.insert_with_lease(init()));
-    lease
+    self.try_get().unwrap_or_else(|| self.insert_with_lease(init()))
   }
 
-  /// Asynchronous version of [`get_or_new()`](Self::get_or_new())
+  /// Asynchronous version of [`try_get_or_new()`](Self::get_or_new())
   ///
   /// Tries to get an existing [`Lease`] if available and if not returns a new one that has been added to the pool.
   ///
@@ -411,7 +412,7 @@ impl<T: Send + Sync + 'static> Pool<T> {
   }
 }
 
-impl<T: Default + Send + Sync> Pool<T> {
+impl<T: Default + Send + Sync + 'static> Pool<T> {
   /// Just like [`get_or_new()`](Self::get_or_new()) but uses [`Default::default()`] as the `init` function
   #[inline]
   pub fn get_or_default(&self) -> Lease<T> {
@@ -432,7 +433,7 @@ impl<T: Default + Send + Sync> Pool<T> {
   }
 }
 
-impl<T: Send + Sync + 'static> Default for Pool<T> {
+impl<T> Default for Pool<T> {
   fn default() -> Self {
     Self {
       inner: Arc::new(PoolInner::default()),
@@ -440,13 +441,13 @@ impl<T: Send + Sync + 'static> Default for Pool<T> {
   }
 }
 
-impl<T: Send + Sync + 'static> core::fmt::Debug for Pool<T> {
+impl<T> core::fmt::Debug for Pool<T> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    struct ListDebugger<'a, T: Send + Sync + 'static> {
+    struct ListDebugger<'a, T> {
       set: &'a lockfree::set::Set<Wrapper<T>>,
     }
 
-    impl<T: Send + Sync + 'static> core::fmt::Debug for ListDebugger<'_, T> {
+    impl<T> core::fmt::Debug for ListDebugger<'_, T> {
       fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list().entries(self.set.iter().map(|m| !m.is_locked())).finish()
       }
@@ -460,13 +461,13 @@ impl<T: Send + Sync + 'static> core::fmt::Debug for Pool<T> {
   }
 }
 
-impl<T: Send + Sync + 'static> Clone for Pool<T> {
+impl<T> Clone for Pool<T> {
   fn clone(&self) -> Self {
     Self { inner: self.inner.clone() }
   }
 }
 
-impl<T: Send + Sync + 'static> FromIterator<T> for Pool<T> {
+impl<T> FromIterator<T> for Pool<T> {
   fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
     Self {
       inner: Arc::new(PoolInner {
@@ -483,12 +484,12 @@ impl<T: Send + Sync + 'static> FromIterator<T> for Pool<T> {
 /// This is a wrapper of pool that once created doesn't allow
 /// any changes to the number of [`Lease`]s that the [`Pool`] contains
 #[derive(Default, Clone)]
-pub struct LockedPool<T: Send + Sync + 'static> {
+pub struct LockedPool<T> {
   pool: Pool<T>,
   len: usize,
 }
 
-impl<T: Send + Sync + 'static> LockedPool<T> {
+impl<T> LockedPool<T> {
   /// Turns this [`Pool`] into a [`LockedPool`]
   ///
   /// # Errors
@@ -549,7 +550,7 @@ impl<T: Send + Sync + 'static> LockedPool<T> {
   }
 }
 
-impl<T: Send + Sync + 'static> core::fmt::Debug for LockedPool<T> {
+impl<T> core::fmt::Debug for LockedPool<T> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     self.pool.fmt(f)
   }
@@ -594,14 +595,14 @@ impl std::error::Error for PoolConversionError {}
 /// It also implements [`AsRef`] and [`AsMut`] for all types that the underlying type
 /// does so those can also be used to get access to the underlying data.  
 #[must_use]
-pub struct Lease<T: Send + Sync + 'static> {
+pub struct Lease<T> {
   // this needs to be an option so we can move ownership in drop if needed.
   guard: Option<ArcMutexGuard<RawMutex, T>>,
   #[cfg(feature = "async")]
   waiting_futures: Arc<async_::WaitingFutures<T>>,
 }
 
-impl<T: Send + Sync + 'static> Drop for Lease<T> {
+impl<T> Drop for Lease<T> {
   fn drop(&mut self) {
     #[cfg(feature = "async")]
     {
@@ -620,7 +621,7 @@ impl<T: Send + Sync + 'static> Drop for Lease<T> {
   }
 }
 
-impl<T: Send + Sync + 'static> Lease<T> {
+impl<T> Lease<T> {
   #[inline]
   fn from_arc_mutex(arc: &Wrapper<T>, #[allow(unused)] pool: &Pool<T>) -> Option<Self> {
     arc.0.try_lock_arc().map(|guard| Self {
@@ -641,13 +642,13 @@ impl<T: Send + Sync + 'static> Lease<T> {
   }
 }
 
-impl<T: core::fmt::Debug + Send + Sync + 'static> core::fmt::Debug for Lease<T> {
+impl<T: core::fmt::Debug> core::fmt::Debug for Lease<T> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     self.deref().fmt(f)
   }
 }
 
-impl<T: Send + Sync + 'static> Deref for Lease<T> {
+impl<T> Deref for Lease<T> {
   type Target = T;
 
   fn deref(&self) -> &Self::Target {
@@ -655,13 +656,13 @@ impl<T: Send + Sync + 'static> Deref for Lease<T> {
   }
 }
 
-impl<T: Send + Sync + 'static> DerefMut for Lease<T> {
+impl<T> DerefMut for Lease<T> {
   fn deref_mut(&mut self) -> &mut Self::Target {
     self.guard_mut()
   }
 }
 
-impl<T: Send + Sync + 'static, U: ?Sized> AsRef<U> for Lease<T>
+impl<T, U: ?Sized> AsRef<U> for Lease<T>
 where
   T: AsRef<U>,
 {
@@ -670,7 +671,7 @@ where
   }
 }
 
-impl<T: Send + Sync + 'static, U: ?Sized> AsMut<U> for Lease<T>
+impl<T, U: ?Sized> AsMut<U> for Lease<T>
 where
   T: AsMut<U>,
 {

@@ -3,11 +3,11 @@ use futures_channel::oneshot::{Receiver, Sender};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-pub(crate) struct WaitingFutures<T: Send + Sync + 'static> {
+pub(crate) struct WaitingFutures<T> {
   order: lockfree::queue::Queue<Sender<Lease<T>>>,
 }
 
-impl<T: Send + Sync + 'static> WaitingFutures<T> {
+impl<T> WaitingFutures<T> {
   pub fn new() -> Self {
     Self {
       order: lockfree::queue::Queue::new(),
@@ -32,7 +32,7 @@ impl<T: Send + Sync + 'static> WaitingFutures<T> {
   }
 }
 
-impl<T: Send + Sync + 'static> Default for WaitingFutures<T> {
+impl<T> Default for WaitingFutures<T> {
   fn default() -> Self {
     Self::new()
   }
@@ -43,17 +43,17 @@ impl<T: Send + Sync + 'static> Default for WaitingFutures<T> {
 /// This is returned by the [`Pool::get()`](super::Pool::get()) method and will resolve once a [`Lease`] is ready.
 #[allow(clippy::module_name_repetitions)]
 #[must_use]
-pub struct AsyncLease<T: Send + Sync + 'static> {
+pub struct AsyncLease<T> {
   receiver: Receiver<Lease<T>>,
 }
 
-impl<T: Send + Sync + 'static> AsyncLease<T> {
+impl<T> AsyncLease<T> {
   pub(crate) fn new(receiver: Receiver<Lease<T>>) -> Self {
     Self { receiver }
   }
 }
 
-impl<T: Send + Sync + 'static> core::future::Future for AsyncLease<T> {
+impl<T> core::future::Future for AsyncLease<T> {
   type Output = super::Lease<T>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -68,12 +68,12 @@ impl<T: Send + Sync + 'static> core::future::Future for AsyncLease<T> {
 
 /// Implements the [`futures_core::Stream`] trait to return [`Lease`]es as they become available.
 #[must_use]
-pub struct PoolStream<T: Send + Sync + 'static> {
+pub struct PoolStream<T> {
   pool: Pool<T>,
   async_lease: AsyncLease<T>,
 }
 
-impl<T: Send + Sync + 'static> PoolStream<T> {
+impl<T> PoolStream<T> {
   pub(crate) fn new(pool: &Pool<T>) -> Self {
     Self {
       pool: pool.clone(),
@@ -88,7 +88,7 @@ fn pool_stream_is_unpin() {
   unpin::<PoolStream<usize>>();
 }
 
-impl<T: Send + Sync + 'static> futures_core::Stream for PoolStream<T> {
+impl<T> futures_core::Stream for PoolStream<T> {
   type Item = Lease<T>;
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
