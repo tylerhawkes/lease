@@ -346,8 +346,7 @@ mod tests {
 
   #[tokio::test]
   async fn test() {
-    let init_pool =
-      InitPool::<u8, InitFnAsync<_>>::new_from(|| Box::pin(async { 42_u8 }) as Pin<Box<dyn Future<Output = u8> + Send + 'static>>);
+    let init_pool = InitPool::<u8, InitFnAsync<_>>::new_from(|| async { 42_u8 }.boxed());
     assert!(init_pool.try_get().is_none());
     assert_eq!(*init_pool.get_or_new().await, 42);
   }

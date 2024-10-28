@@ -412,7 +412,7 @@ impl<T> Pool<T> {
   }
 }
 
-impl<T: Default + Send + Sync + 'static> Pool<T> {
+impl<T: Default> Pool<T> {
   /// Just like [`get_or_new()`](Self::get_or_new()) but uses [`Default::default()`] as the `init` function
   #[inline]
   pub fn get_or_default(&self) -> Lease<T> {

@@ -1,6 +1,6 @@
 [package]
 name = "lease"
-version = "0.5.1"
+version = "0.5.2"
 authors = ["Tyler Hawkes <tyler.hawkes@gmail.com>"]
 edition = "2021"
 publish = ["crates-io"]
