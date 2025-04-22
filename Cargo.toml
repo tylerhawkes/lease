@@ -1,8 +1,8 @@
 [package]
 name = "lease"
-version = "0.5.2"
+version = "0.5.3"
 authors = ["Tyler Hawkes <tyler.hawkes@gmail.com>"]
-edition = "2021"
+edition = "2024"
 publish = ["crates-io"]
 description = "Object pool that leases values and automatically returns them with async support"
 license = "MIT OR Apache-2.0"

@@ -182,8 +182,7 @@ impl<T: Send + Sync + 'static, I: Init> InitPool<T, I> {
   where
     I::Output: Into<T>,
   {
-    let lease = self.pool.try_get_or_new(|| self.init.call().into());
-    lease
+    self.pool.try_get_or_new(|| self.init.call().into())
   }
 
   /// Asynchronous version of [`try_get_or_new()`](Self::try_get_or_new())

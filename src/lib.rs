@@ -1,3 +1,4 @@
+#![deny(clippy::pedantic)]
 //! # Lease
 //! This crate provides a [`Pool`] struct that allows taking [`Lease`]es and using them.
 //! When a [`Lease`] is dropped it is automatically returned to the pool.
@@ -28,8 +29,8 @@ use std::sync::Arc;
 #[cfg(feature = "async")]
 pub use async_::{AsyncLease, PoolStream};
 pub use init::InitPool;
-use parking_lot::lock_api::ArcMutexGuard;
 use parking_lot::RawMutex;
+use parking_lot::lock_api::ArcMutexGuard;
 
 #[cfg(feature = "async")]
 mod async_;
