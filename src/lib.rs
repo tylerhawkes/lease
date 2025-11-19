@@ -47,7 +47,7 @@ pub struct Pool<T> {
 }
 
 struct PoolInner<T> {
-  buffer: lockfree::set::Set<Wrapper<T>>,
+  buffer: lock_freedom::set::Set<Wrapper<T>>,
   #[cfg(feature = "async")]
   waiting_futures: Arc<async_::WaitingFutures<T>>,
 }
@@ -56,7 +56,7 @@ impl<T> Default for PoolInner<T> {
   #[inline]
   fn default() -> Self {
     Self {
-      buffer: lockfree::set::Set::default(),
+      buffer: lock_freedom::set::Set::default(),
       #[cfg(feature = "async")]
       waiting_futures: Arc::default(),
     }
@@ -110,7 +110,7 @@ impl<T> Pool<T> {
   /// This returns the very first error returned by `init`
   #[inline]
   pub fn try_with_initial_size<E>(pool_size: usize, mut init: impl FnMut() -> Result<T, E>) -> Result<Self, E> {
-    let buffer = lockfree::set::Set::new();
+    let buffer = lock_freedom::set::Set::new();
     for _ in 0..pool_size {
       buffer
         .insert(Wrapper::new(init()?))
@@ -445,7 +445,7 @@ impl<T> Default for Pool<T> {
 impl<T> core::fmt::Debug for Pool<T> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     struct ListDebugger<'a, T> {
-      set: &'a lockfree::set::Set<Wrapper<T>>,
+      set: &'a lock_freedom::set::Set<Wrapper<T>>,
     }
 
     impl<T> core::fmt::Debug for ListDebugger<'_, T> {

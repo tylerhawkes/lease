@@ -23,7 +23,7 @@ categories = [
 [dependencies]
 futures-core = { version = "0.3", optional = true, default-features = false }
 futures-channel = { version = "0.3", optional = true }
-lockfree = "0.5"
+lock_freedom = "0.1"
 parking_lot = { version = "0.12", default-features = false, features = [
   "arc_lock",
   "send_guard",

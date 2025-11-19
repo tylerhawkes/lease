@@ -4,13 +4,13 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 pub(crate) struct WaitingFutures<T> {
-  order: lockfree::queue::Queue<Sender<Lease<T>>>,
+  order: lock_freedom::queue::Queue<Sender<Lease<T>>>,
 }
 
 impl<T> WaitingFutures<T> {
   pub fn new() -> Self {
     Self {
-      order: lockfree::queue::Queue::new(),
+      order: lock_freedom::queue::Queue::new(),
     }
   }
   pub fn insert(&self, sender: Sender<Lease<T>>) {
